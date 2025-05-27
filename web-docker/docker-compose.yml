@@ -1,0 +1,18 @@
+version: '3'
+
+services:
+  web:
+    image: nginx:latest
+    ports:
+      - "8081:80"
+    environment:
+      HOST_IP: 172.16.200.110
+      DIFY_EVAL_API_KEY: app-JUKOGox2NAtcPWhp3Ih3qkXi
+      DIFY_CHECK_API_KEY: app-zyC6qIy6z31zpFzpv0PSAX18
+      DIFY_GEN_QA_API_KEY: app-KIM6yEvNXVaP7YaxfE50rZnO
+      DIFY_REGEN_QA_API_KEY: app-eaU2SGns0KFWUnEQlvBwvghc
+      DIFY_OCR_WORKFLOW_TAG_ID: 931e4b92-d4f0-4cdb-9c7a-df4e710fcea2
+    volumes:
+      - ./html:/usr/share/nginx/html
+      - ./entrypoint.sh:/entrypoint.sh
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]

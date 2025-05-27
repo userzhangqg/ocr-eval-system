@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>大模型OCR评测结果展示</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="/env.js"></script>
+  <style>
+    .nav-back {
+      position: absolute;
+      left: 20px;
+      top: 20px;
+      z-index: 1000;
+    }
+    .modal-lg { max-width: 90%; }
+    #image-container img { max-width: 100%; height: auto; }
+    .qa-item { margin-bottom: 0.5rem; }
+    .qa-item hr { margin-top: 0.5rem; margin-bottom: 0.5rem; }
+    .btn-audit { margin-right: 0.5rem; }
+    .btn-success[disabled] {
+      opacity: 0.65;
+      background-color: #198754;
+      border-color: #198754;
+    }
+    /* Add new styles for answer colors */
+    .correct-answer {
+      color: #198754;
+    }
+    .incorrect-answer {
+      color: #dc3545;
+    }
+    /* New styles for navigation buttons */
+    .nav-btn {
+      position: fixed;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 50px;
+      height: 50px;
+      border-radius: 50%;
+      background: rgba(0, 0, 0, 0.5);
+      color: white;
+      border: none;
+      font-size: 24px;
+      z-index: 1050;
+      opacity: 0.7;
+      transition: opacity 0.3s;
+    }
+    .nav-btn.disabled {
+      opacity: 0.5;
+    }
+    .nav-btn:hover {
+      opacity: 1;
+    }
+    .prev-btn {
+      left: 20px;
+    }
+    .next-btn {
+      right: 20px;
+    }
+    .close-btn {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      z-index: 1050;
+      background: rgba(0, 0, 0, 0.5);
+      color: white;
+      border: none;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      opacity: 0.7;
+      transition: opacity 0.3s;
+    }
+    .close-btn:hover {
+      opacity: 1;
+    }
+    .modal-header {
+      border-bottom: none;
+    }
+  </style>
+</head>
+<body>
+<div class="container mt-4">
+  <a href="index.html" class="btn btn-secondary nav-back">返回首页</a>
+  <h2 class="text-center">大模型OCR评测结果展示</h2>
+  <div class="mb-3">
+    <select class="form-select" id="datasetSelect" onchange="onDatasetChange()">
+      <option value="">请选择评测结果集</option>
+    </select>
+  </div>
+  <div class="mb-4">
+    <canvas id="summaryChart"></canvas>
+  </div>
+  <div class="mb-4">
+    <canvas id="correctCountChart"></canvas>
+  </div>
+  <ul class="list-group" id="entryList">
+    <!-- 评测结果集条目列表 -->
+  </ul>
+</div>
+
+<!-- Modal -->
+<div class="modal fade" id="detailModal" tabindex="-1" aria-labelledby="detailModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content p-3">
+      <div class="modal-header">
+        <h5 class="text-center w-100 mb-0" id="modalTitle"></h5>
+      </div>
+      <button class="nav-btn prev-btn" onclick="navigate(-1)">←</button>
+      <button class="nav-btn next-btn" onclick="navigate(1)">→</button>
+      <button class="close-btn" data-bs-dismiss="modal" aria-label="Close">×</button>
+
+      <div class="row g-2">
+        <div class="col-md-6 p-2" id="image-container"></div>
+        <div class="col-md-6 p-2" id="qa-container"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+  const SUPABASE_HOST = window.SUPABASE_HOST;
+  const DIFY_HOST = window.DIFY_HOST; // 请替换为实际dify工作流接口地址
+  const supabaseBaseUrl = BASE_URL + '/api/storage/default/buckets/ocr_result/objects/list';
+  const SUPABASE_AUTH_HEADER = window.SUPABASE_AUTH_HEADER;
+
+  let datasets = [];
+  let entries = [];
+  let currentIndex = 0;
+  let currentDataset = '';
+  let detailModalInstance = null;
+  let isRequestPending = false;
+
+  async function loadDatasets() {
+    try {
+      const response = await fetch(supabaseBaseUrl, {
+        method: 'POST',
+        headers: {
+          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+          'Authorization': SUPABASE_AUTH_HEADER,
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'accept': 'application/json',
+          'content-type': 'application/json',
+          'Pragma': 'no-cache',
+          'User-Agent': 'Mozilla/5.0',
+        },
+        body: JSON.stringify({
+          path: "",
+          options: {
+            limit: 200,
+            offset: 0,
+            search: "",
+            sortBy: { column: "name", order: "asc" }
+          }
+        })
+      });
+      const data = await response.json();
+      datasets = data.map(item => item.name).filter(name => name);
+      populateDatasetSelect();
+    } catch (error) {
+      alert('加载数据集目录失败: ' + error);
+    }
+  }
+
+  function populateDatasetSelect() {
+    const select = document.getElementById('datasetSelect');
+    // select.innerHTML = '<option value="">请选择数据集</option>';
+    datasets.forEach(ds => {
+      const option = document.createElement('option');
+      option.value = ds;
+      option.textContent = ds;
+      select.appendChild(option);
+    });
+  }
+
+async function onDatasetChange() {
+  const select = document.getElementById('datasetSelect');
+  currentDataset = select.value;
+  if (!currentDataset) {
+    entries = [];
+    renderEntryList();
+    return;
+  }
+
+  // Load summary data
+  const summaryData = await fetchSummaryData();
+  if (summaryData) {
+    renderSummaryChart(summaryData);
+  }
+  // Load correct count data
+  const correctCountData = await fetchCorrectCountData();
+  if (correctCountData) {
+    renderCorrectCountChart(correctCountData);
+  }
+
+    try {
+      const response = await fetch(supabaseBaseUrl, {
+        method: 'POST',
+        headers: {
+          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+          'Authorization': SUPABASE_AUTH_HEADER,
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'accept': 'application/json',
+          'content-type': 'application/json',
+          'Pragma': 'no-cache',
+          'User-Agent': 'Mozilla/5.0',
+        },
+        body: JSON.stringify({
+          path: currentDataset + '/',
+          options: {
+            limit: 200,
+            offset: 0,
+            search: "",
+            sortBy: { column: "name", order: "asc" }
+          }
+        })
+      });
+      const data = await response.json();
+      entries = data.filter(item => item.name && !item.id).map(item => item.name);
+      renderEntryList();
+    } catch (error) {
+      alert('加载数据列表失败: ' + error);
+    }
+  }
+
+  function renderEntryList() {
+    const list = document.getElementById('entryList');
+    list.innerHTML = '';
+    entries.forEach(entry => {
+      const li = document.createElement('li');
+      li.className = 'list-group-item';
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-link';
+      btn.textContent = entry;
+      btn.onclick = () => openModal(entry);
+      li.appendChild(btn);
+      list.appendChild(li);
+    });
+  }
+
+  async function openModal(entryId) {
+    currentIndex = entries.indexOf(entryId);
+    document.getElementById('modalTitle').textContent = entryId;
+    await loadEntry(entryId);
+    detailModalInstance = bootstrap.Modal.getOrCreateInstance(document.getElementById('detailModal'));
+    detailModalInstance.show();
+  }
+
+  function navigate(offset) {
+    if (entries.length === 0) return;
+    if (isRequestPending) {
+      // Show processing toast
+      const toastEl = document.createElement('div');
+      toastEl.className = 'toast-container position-fixed top-0 start-50 translate-middle-x p-3';
+      toastEl.style.zIndex = '1100';
+      toastEl.innerHTML = `
+        <div class="toast show" role="alert" aria-live="assertive" aria-atomic="true">
+          <div class="toast-header bg-primary text-white">
+            <strong class="me-auto">处理中</strong>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast" aria-label="Close"></button>
+          </div>
+          <div class="toast-body">
+            请求处理中，请稍等片刻...
+          </div>
+        </div>
+      `;
+      document.body.appendChild(toastEl);
+      setTimeout(() => toastEl.remove(), 2000);
+      return;
+    }
+    
+    isRequestPending = true;
+    updateNavButtons();
+    
+    const navBtn = offset === -1 ? document.querySelector('.prev-btn') : document.querySelector('.next-btn');
+    if (navBtn) {
+      navBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+      navBtn.disabled = true;
+    }
+
+    currentIndex = (currentIndex + offset + entries.length) % entries.length;
+    openModal(entries[currentIndex]).finally(() => {
+      isRequestPending = false;
+      updateNavButtons();
+    });
+  }
+
+  function updateNavButtons() {
+    const prevBtn = document.querySelector('.prev-btn');
+    const nextBtn = document.querySelector('.next-btn');
+    if (prevBtn && nextBtn) {
+      prevBtn.disabled = isRequestPending;
+      nextBtn.disabled = isRequestPending;
+      if (isRequestPending) {
+        prevBtn.classList.add('disabled');
+        nextBtn.classList.add('disabled');
+      } else {
+        prevBtn.classList.remove('disabled');
+        nextBtn.classList.remove('disabled');
+        prevBtn.innerHTML = '←';
+        nextBtn.innerHTML = '→';
+      }
+    }
+  }
+
+  async function loadEntry(entryId) {
+    try {
+      const imgUrl = SUPABASE_HOST + '/storage/v1/object/public/ocr_result/' + currentDataset + '/' + entryId + '/' + entryId;
+      const baseQaUrl = SUPABASE_HOST + '/storage/v1/object/public/ocr_result/' + currentDataset + '/' + entryId + '/';
+
+      const qaFiles = {
+        'single_choice': '01_single_choice_question.json',
+        'fill_in_the_blank': '02_fill_in_the_blank_question.json',
+        'true_false': '03_true_false_question.json'
+      };
+
+      const fallbackQaUrl = baseQaUrl + 'qa.jsonl';
+      let questions = [];
+      let fetchedData = false;
+
+      for (const [type, file] of Object.entries(qaFiles)) {
+        try {
+          const qaUrl = baseQaUrl + file;
+          const response = await fetch(qaUrl);
+          if (!response.ok) throw new Error(`加载${type}问答文件失败`);
+          const data = await response.json();
+          if (Array.isArray(data)) {
+            questions.push(...data.map(q => ({...q, type: type})));
+          } else {
+            questions.push({...data, type: type});
+          }
+          fetchedData = true;
+        } catch (error) {
+          console.warn(`无法加载题型 ${type}: `, error);
+        }
+      }
+
+      if (!fetchedData) {
+        try {
+          const response = await fetch(fallbackQaUrl);
+          if (!response.ok) throw new Error('加载旧版问答文件失败');
+          const text = await response.text();
+          const lines = text.trim().split('\n');
+          questions = lines.map(line => {
+            try {
+              return JSON.parse(line);
+            } catch (e) {
+              console.error('解析JSON行失败:', e, '行内容:', line);
+              return null;
+            }
+          }).filter(q => q !== null);
+          fetchedData = true;
+        } catch (error) {
+          console.warn('无法加载旧版问答文件:', error);
+        }
+      }
+
+      document.getElementById('image-container').innerHTML = `
+        <div id="image-preview-container" style="width: 100%; height: 90vh; overflow: hidden; display: flex; justify-content: center; align-items: center; border: 1px solid #ddd; border-radius: 4px; position: relative;">
+          <img id="preview-image" src="${imgUrl}" alt="Image ${entryId}" style="transition: transform 0.3s ease; max-width: 100%; max-height: 100%; cursor: grab; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);">
+        </div>
+        <div id="image-controls" class="d-flex justify-content-center mt-2 gap-2">
+          <button type="button" class="btn btn-outline-primary btn-sm" title="左旋90度" onclick="rotateImage(-90)">&#8634;</button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" title="复位" onclick="resetImage()">&#8635;</button>
+          <button type="button" class="btn btn-outline-primary btn-sm" title="右旋90度" onclick="rotateImage(90)">&#8635;</button>
+          <button type="button" class="btn btn-outline-primary btn-sm" title="缩小" onclick="scaleImage(0.9)">&#8722;</button>
+          <button type="button" class="btn btn-outline-primary btn-sm" title="放大" onclick="scaleImage(1.1)">&#43;</button>
+        </div>
+      `;
+
+      const qaContainer = document.getElementById('qa-container');
+      qaContainer.innerHTML = '';
+      window.questions = questions;
+      questions.forEach((q, i) => {
+        const div = document.createElement('div');
+        div.className = 'qa-item';
+        const typeTranslations = {
+          'single_choice': '单选题',
+          'fill_in_the_blank': '填空题',
+          'true_false': '判断题'
+        };
+        let html = `<p><b>题目${i+1}（${typeTranslations[q.type] || q.type}）</b>: ${q.question}</p>`;
+        if (q.type === 'single_choice') {
+          html += '<ul>' + Object.entries(q.options).map(([k, v]) =>
+            '<li>' + k + ': ' + v + '</li>').join('') + '</ul>';
+        }
+        html += `<p><b>正确答案</b>: ${q.answer}</p>`;
+        html += `<p class="${q.correct ? 'correct-answer' : 'incorrect-answer'}"><b>模型答案</b>: ${q.pred_answer}</p>`;
+        html += '<p><i>参考</i>: ' + q.reference + '</p>';
+        html += '<hr>';
+
+        div.innerHTML = html;
+        qaContainer.appendChild(div);
+      });
+    } catch (error) {
+      alert('加载条目详情失败: ' + error);
+    }
+  }
+
+  function getQAFileName(questionType) {
+    const qaFiles = {
+      'single_choice': '01_single_choice_question.json',
+      'fill_in_the_blank': '02_fill_in_the_blank_question.json',
+      'true_false': '03_true_false_question.json'
+    };
+    return qaFiles[questionType] || 'qa.jsonl';
+  }
+
+  document.getElementById('detailModal').addEventListener('hidden.bs.modal', function () {
+    document.body.classList.remove('modal-open');
+    document.querySelectorAll('.modal-backdrop').forEach(el => el.remove());
+  });
+
+  async function updateQuestionElement(entryId, questionIndex) {
+    const question = window.questions && window.questions[questionIndex];
+    if (!question) return;
+
+    const div = document.querySelector(`.qa-item:nth-child(${questionIndex + 1})`);
+    if (!div) return;
+
+    const typeTranslations = {
+      'single_choice': '单选题',
+      'fill_in_the_blank': '填空题',
+      'true_false': '判断题'
+    };
+    
+    let html = `<p><b>题目${questionIndex+1}（${typeTranslations[question.type] || question.type}）</b>: ${question.question}</p>`;
+    if (question.type === 'single_choice') {
+      html += '<ul>' + Object.entries(question.options).map(([k, v]) =>
+        '<li>' + k + ': ' + v + '</li>').join('') + '</ul>';
+    }
+    html += `<p><b>正确答案</b>: ${question.answer}</p>`;
+    html += `<p class="${question.correct ? 'correct-answer' : 'incorrect-answer'}"><b>模型答案</b>: ${question.pred_answer}</p>`;
+    html += '<p><i>参考</i>: ' + question.reference + '</p>';
+    html += '<hr>';
+
+    div.innerHTML = html;
+  }
+
+async function fetchSummaryData() {
+  if (!currentDataset) return null;
+  try {
+    const response = await fetch(SUPABASE_HOST + '/storage/v1/object/public/ocr_result/' + currentDataset + '/summary.json');
+    return await response.json();
+  } catch (error) {
+    console.error('Failed to load summary data:', error);
+    return null;
+  }
+}
+
+async function fetchCorrectCountData() {
+  if (!currentDataset) return null;
+  try {
+    const response = await fetch(SUPABASE_HOST + '/storage/v1/object/public/ocr_result/' + currentDataset + '/summary.json');
+    const data = await response.json();
+    // Calculate correct and total counts
+    const correctCounts = {
+      '总体': data.overall.correct || 0,
+      '单选题': data.single_choice.correct || 0,
+      '填空题': data.fill_in_the_blank.correct || 0,
+      '判断题': data.true_false.correct || 0
+    };
+    const totalCounts = {
+      '总体': data.overall.total || 0,
+      '单选题': data.single_choice.total || 0,
+      '填空题': data.fill_in_the_blank.total || 0,
+      '判断题': data.true_false.total || 0
+    };
+    const correctTotal = Object.values(correctCounts).reduce((a, b) => a + b, 0);
+    const totalTotal = Object.values(totalCounts).reduce((a, b) => a + b, 0);
+    return { correctCounts, totalCounts, correctTotal, totalTotal };
+  } catch (error) {
+    console.error('Failed to load correct count data:', error);
+    return null;
+  }
+}
+
+let summaryChartInstance = null;
+let correctCountChartInstance = null;
+
+function renderSummaryChart(data) {
+  const ctx = document.getElementById('summaryChart');
+  if (summaryChartInstance) {
+    summaryChartInstance.destroy();
+  }
+  summaryChartInstance = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: ['总体准确率', '单选题准确率', '填空题准确率', '判断题准确率'],
+      datasets: [{
+        label: '准确率',
+        data: [
+          data.overall.accuracy,
+          data.single_choice.accuracy,
+          data.fill_in_the_blank.accuracy,
+          data.true_false.accuracy
+        ],
+        backgroundColor: [
+          'rgba(54, 162, 235, 0.5)',
+          'rgba(75, 192, 192, 0.5)',
+          'rgba(255, 206, 86, 0.5)',
+          'rgba(255, 99, 132, 0.5)'
+        ],
+        borderColor: [
+          'rgba(54, 162, 235, 1)',
+          'rgba(75, 192, 192, 1)',
+          'rgba(255, 206, 86, 1)',
+          'rgba(255, 99, 132, 1)'
+        ],
+        borderWidth: 1
+      }]
+    },
+    options: {
+      plugins: {
+        title: {
+          display: true,
+          text: '各题型准确率对比',
+          font: {
+            size: 16
+          }
+        },
+        tooltip: {
+          callbacks: {
+            label: context => {
+              const value = context.raw;
+              return `准确率: ${(value * 100).toFixed(1)}%`;
+            }
+          }
+        },
+        legend: {
+          position: 'bottom',
+          labels: {
+            font: {
+              size: 14
+            }
+          }
+        }
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          max: 1,
+          ticks: {
+            callback: value => (value * 100).toFixed(0) + '%'
+          }
+        }
+      }
+    }
+  });
+  return summaryChartInstance;
+}
+
+function renderCorrectCountChart(data) {
+  const ctx = document.getElementById('correctCountChart');
+  if (correctCountChartInstance) {
+    correctCountChartInstance.destroy();
+  }
+  const correctCounts = data.correctCounts;
+  const totalCounts = data.totalCounts;
+  const labels = Object.keys(correctCounts);
+  const correctValues = labels.map(label => correctCounts[label]);
+  const incorrectValues = labels.map(label => totalCounts[label] - correctCounts[label]);
+  correctCountChartInstance = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [
+        {
+          label: '正确数量',
+          data: correctValues,
+          backgroundColor: 'rgba(54, 162, 235, 0.7)',
+          borderColor: 'rgba(54, 162, 235, 1)',
+          borderWidth: 1
+        },
+        {
+          label: '错误数量',
+          data: incorrectValues,
+          backgroundColor: 'rgba(255, 99, 132, 0.7)',
+          borderColor: 'rgba(255, 99, 132, 1)',
+          borderWidth: 1
+        }
+      ]
+    },
+    options: {
+      plugins: {
+        title: {
+          display: true,
+          text: '各题型正确数量对比',
+          font: {
+            size: 16
+          }
+        },
+        tooltip: {
+          mode: 'index',
+          intersect: false
+        },
+        legend: {
+          position: 'bottom',
+          labels: {
+            font: {
+              size: 14
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          stacked: true
+        },
+        y: {
+          stacked: true,
+          beginAtZero: true,
+          ticks: {
+            stepSize: 1
+          }
+        }
+      }
+    }
+  });
+  return correctCountChartInstance;
+}
+
+let rotation = 0;
+let scale = 1;
+
+let isDragging = false;
+let dragStartX = 0;
+let dragStartY = 0;
+let imgPosX = 0;
+let imgPosY = 0;
+
+function rotateImage(angle) {
+  rotation = (rotation + angle) % 360;
+  const img = document.getElementById('preview-image');
+  if (img) {
+    img.style.transformOrigin = 'center center';
+    img.style.transform = `translate(calc(-50% + ${imgPosX}px), calc(-50% + ${imgPosY}px)) rotate(${rotation}deg) scale(${scale})`;
+  }
+}
+
+function scaleImage(factor) {
+  scale *= factor;
+  if (scale < 0.1) scale = 0.1;
+  if (scale > 3) scale = 3;
+  const img = document.getElementById('preview-image');
+  if (img) {
+    img.style.transformOrigin = 'center center';
+    img.style.transform = `translate(calc(-50% + ${imgPosX}px), calc(-50% + ${imgPosY}px)) rotate(${rotation}deg) scale(${scale})`;
+  }
+}
+
+function resetImage() {
+  rotation = 0;
+  scale = 1;
+  imgPosX = 0;
+  imgPosY = 0;
+  const img = document.getElementById('preview-image');
+  if (img) {
+    img.style.transformOrigin = 'center center';
+    img.style.transform = `translate(calc(-50% + ${imgPosX}px), calc(-50% + ${imgPosY}px)) rotate(${rotation}deg) scale(${scale})`;
+  }
+}
+
+function updateImageTransform() {
+  const img = document.getElementById('preview-image');
+  if (img) {
+    img.style.transform = `translate(calc(-50% + ${imgPosX}px), calc(-50% + ${imgPosY}px)) rotate(${rotation}deg) scale(${scale})`;
+  }
+}
+
+function onMouseDown(event) {
+  if (scale <= 1) return;
+  isDragging = true;
+  dragStartX = event.clientX - imgPosX;
+  dragStartY = event.clientY - imgPosY;
+  const img = document.getElementById('preview-image');
+  if (img) img.style.cursor = 'grabbing';
+  event.preventDefault();
+}
+
+function onMouseMove(event) {
+  if (!isDragging) return;
+  imgPosX = event.clientX - dragStartX;
+  imgPosY = event.clientY - dragStartY;
+  updateImageTransform();
+}
+
+function onMouseUp(event) {
+  if (!isDragging) return;
+  isDragging = false;
+  const img = document.getElementById('preview-image');
+  if (img) img.style.cursor = 'grab';
+}
+
+document.addEventListener('mousedown', function(event) {
+  if (event.target.id === 'preview-image') {
+    onMouseDown(event);
+  }
+});
+document.addEventListener('mousemove', onMouseMove);
+document.addEventListener('mouseup', onMouseUp);
+
+window.onload = () => {
+  loadDatasets();
+};
+
+
+</script>
+</body>
+</html>
